@@ -1,0 +1,61 @@
+name: Sync Template Files to Derived Repos
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  sync-files:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
+
+    steps:
+      - name: Checkout template repository
+        uses: actions/checkout@v4
+
+      - name: Install GitHub CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install gh -y
+
+      - name: Set up Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync template files to derived repositories
+        run: |
+          # Read the list of derived repos from the file
+          DERIVED_REPOS=$(cat derived_repos.txt)
+
+          # List all files and folders in the template repo (excluding .git and .github)
+          FILES_TO_SYNC=$(find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' -printf '%P\n')
+
+          for repo in $DERIVED_REPOS; do
+            git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${repo}.git"
+            cd "$(basename "$repo")"
+
+            git checkout -b update-from-template || git checkout update-from-template
+
+            for file in $FILES_TO_SYNC; do
+              rsync -a --delete "../$file" "./$file"
+              git add "$file"
+            done
+
+            if ! git diff --cached --quiet; then
+              git commit -m "Sync template files from template repo"
+              git push origin update-from-template
+
+              gh pr create --title "Sync template files" \
+                --body "Automated update from template repository." \
+                --base main --head update-from-template || true
+            fi
+
+            cd ..
+            rm -rf "$(basename "$repo")"
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
+        shell: bash
