@@ -7,7 +7,7 @@ on:
 
 jobs:
   sync-files:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     env:
       GITHUB_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
 
@@ -17,45 +17,62 @@ jobs:
 
       - name: Install GitHub CLI
         run: |
-          sudo apt-get update
-          sudo apt-get install gh -y
+          choco install gh -y
+        shell: powershell
 
       - name: Set up Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        shell: powershell
 
       - name: Sync template files to derived repositories
         run: |
           # Read the list of derived repos from the file
-          DERIVED_REPOS=$(cat derived_repos.txt)
+          $DERIVED_REPOS = Get-Content derived_repos.txt
 
           # List all files and folders in the template repo (excluding .git and .github)
-          FILES_TO_SYNC=$(find . -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.github' -printf '%P\n')
+          $FILES_TO_SYNC = Get-ChildItem -Name | Where-Object { $_ -ne '.git' -and $_ -ne '.github' }
 
-          for repo in $DERIVED_REPOS; do
-            git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/${repo}.git"
-            cd "$(basename "$repo")"
+          foreach ($repo in $DERIVED_REPOS) {
+            git clone "https://x-access-token:${env:GITHUB_TOKEN}@github.com/$repo.git"
+            $repoName = $repo.Split('/')[-1]
+            Set-Location $repoName
 
-            git checkout -b update-from-template || git checkout update-from-template
+            # Ensure branch is up-to-date with remote
+            $branchExists = git ls-remote --exit-code --heads origin update-from-template 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              git fetch origin update-from-template:update-from-template
+              git checkout update-from-template
+              git reset --hard origin/update-from-template
+            } else {
+              git checkout -b update-from-template
+            }
 
-            for file in $FILES_TO_SYNC; do
-              rsync -a --delete "../$file" "./$file"
-              git add "$file"
-            done
+            foreach ($file in $FILES_TO_SYNC) {
+              $src = "..\$file"
+              $dst = ".\$file"
+              if (Test-Path $src) {
+                if (Test-Path $dst) {
+                  Remove-Item $dst -Recurse -Force
+                }
+                Copy-Item $src $dst -Recurse
+                git add $file
+              }
+            }
 
-            if ! git diff --cached --quiet; then
+            git diff --cached --quiet; $hasChanges = $LASTEXITCODE
+            if ($hasChanges -ne 0) {
               git commit -m "Sync template files from template repo"
               git push origin update-from-template
+              gh pr create --title "Sync template files" `
+                --body "Automated update from template repository." `
+                --base main --head update-from-template
+            }
 
-              gh pr create --title "Sync template files" \
-                --body "Automated update from template repository." \
-                --base main --head update-from-template || true
-            fi
-
-            cd ..
-            rm -rf "$(basename "$repo")"
-          done
+            Set-Location ..
+            Remove-Item $repoName -Recurse -Force
+          }
         env:
           GITHUB_TOKEN: ${{ secrets.PERSONAL_TOKEN }}
-        shell: bash
+        shell: powershell
